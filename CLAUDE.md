@@ -25,7 +25,7 @@ sudo bash install-qwen-strata.sh --uninstall
 ```
 browser / coding agent
   → nginx (TCP 38080, selected interfaces; site qwen-strata, no default_server)
-    → strata serve (127.0.0.1:48080; qwen-strata.service, service user)
+    → strata serve (127.0.0.1:38081; qwen-strata.service, service user)
       → Strata engine (child process)
 ```
 
@@ -101,7 +101,7 @@ If one of them is wrong, the installer most likely stops in `launch_model` or `s
 - `strata launch ... --no-tui` without a terminal: prints progress, asks nothing (stdin is `/dev/null`), returns 0 after a successful test start, and writes `<destdir>/.config/strata/profiles/launch-qwen-strata.json` and `<destdir>/.local/state/strata/launch/qwen-strata.json` (checked by `launch_model`).
 - `--access local` together with `--api-key-env STRATA_API_KEY` keeps the key, and `STRATA_API_KEY` from the unit's `EnvironmentFile` is what `strata serve` enforces.
 - `strata launch --stop --preset qwen-strata` frees the port within 200 seconds.
-- `strata serve --profile launch-qwen-strata --host 127.0.0.1 --port 48080` runs under the unit as written: `runuser`/systemd with a `nologin` shell, `ProtectSystem=full`, `KillMode=mixed`, stop within `TimeoutStopSec=150`. Check `systemctl stop` and `restart` timings, and whether `LimitMEMLOCK`/`LimitRTTIME` warnings disappear from the logs. Sandboxing can be tightened only after this works.
+- `strata serve --profile launch-qwen-strata --host 127.0.0.1 --port 38081` runs under the unit as written: `runuser`/systemd with a `nologin` shell, `ProtectSystem=full`, `KillMode=mixed`, stop within `TimeoutStopSec=150`. Check `systemctl stop` and `restart` timings, and whether `LimitMEMLOCK`/`LimitRTTIME` warnings disappear from the logs. Sandboxing can be tightened only after this works.
 - `strata --version` exists and succeeds (used to decide whether the Terminal is reused); the Terminal version in the release's `install-manifest.txt` is `0.1.59.1` (`QWENSTRATAINS_STRATA_TERMINAL_VERSION`).
 - `/health` answers only when the model is loaded and contains `"loaded": true`, `"model": "..."` and `"max_context": N` (parsed with `sed` in `wait_health`).
 - Through nginx: `GET /config` is 401 without the key and 200 with it; `GET /metrics` and `GET /v1/models` are 200 with the key; the chat test body (`model`, `messages`, `max_tokens: 32`) is accepted. A thinking model may return an empty `content` with 32 tokens, which is why only the HTTP status is checked.

@@ -60,7 +60,7 @@ Never asked (option or environment variable only):
 | `--model 3.8-flash-next` | `QWENSTRATA_MODEL` | `3.8-flash-next` (the only model for now) |
 | `--backend auto\|nvidia\|amd` | `QWENSTRATA_BACKEND` | `auto` |
 | `--kv int8\|k8v4\|q4_0\|fp16` | `QWENSTRATA_KV` | `int8` |
-| `--strata-port PORT` | `QWENSTRATA_STRATA_PORT` | `48080` |
+| `--strata-port PORT` | `QWENSTRATA_STRATA_PORT` | `38081` |
 
 Actions:
 
@@ -98,7 +98,7 @@ API key: see [API key](#api-key).
   install.conf                              settings of the installation
   strata.env                                API key (STRATA_API_KEY; root and the service user only)
   nginx-key.conf                            the same key for nginx (root only)
-/etc/systemd/system/qwen-strata.service     strata serve (127.0.0.1:48080)
+/etc/systemd/system/qwen-strata.service     strata serve (127.0.0.1:38081)
 /etc/nginx/sites-available/qwen-strata      (linked from sites-enabled)
 /etc/logrotate.d/qwen-strata                rotation of the engine log
 ```
@@ -172,14 +172,14 @@ Selected with `--quant`. The installer derives Strata's `--family` and `--model`
 ```
 web browser / coding agent
   → nginx (TCP 38080, on the selected network interfaces)
-    → strata serve (127.0.0.1:48080; systemd unit qwen-strata.service, service user)
+    → strata serve (127.0.0.1:38081; systemd unit qwen-strata.service, service user)
       → Strata engine (child process of strata serve; GPU)
 ```
 
 - Strata's server provides the web chat page (`/`), the OpenAI-compatible API (`/v1/chat/completions`, `/v1/responses`, `/v1/models`) and the Anthropic-compatible API (`/v1/messages`, `/v1/messages/count_tokens`) on one port. There is no `/v1/completions` and no embeddings endpoint.
 - nginx (`nginx-full` from apt) is the only part reachable from other hosts. The site `qwen-strata` does not use `default_server`, so it can live beside other sites (e.g. plamo-3-translate-installer-for-resolute on TCP 18080 and 28080). Responses are not buffered (streaming), the timeouts are 3660 seconds and request bodies may be up to 256 MiB (pictures are sent inline).
 - The service runs as the user given at installation (default `qwenstrata`). If the user does not exist, it is created as a system user without login and with destdir as its home directory. An existing user is used only if its home directory is destdir.
-- systemd unit: `Type=simple`, `strata serve --profile launch-qwen-strata --host 127.0.0.1 --port 48080`, `LimitMEMLOCK=infinity` (the engine pins the model in RAM), `LimitRTTIME=infinity`, `TimeoutStartSec=infinity`, `TimeoutStopSec=150`, `Restart=on-failure`, supplementary groups `video` and `render`. Sandboxing is light (`NoNewPrivileges`, `ProtectSystem=full`) until the service has been tested on real hardware.
+- systemd unit: `Type=simple`, `strata serve --profile launch-qwen-strata --host 127.0.0.1 --port 38081`, `LimitMEMLOCK=infinity` (the engine pins the model in RAM), `LimitRTTIME=infinity`, `TimeoutStartSec=infinity`, `TimeoutStopSec=150`, `Restart=on-failure`, supplementary groups `video` and `render`. Sandboxing is light (`NoNewPrivileges`, `ProtectSystem=full`) until the service has been tested on real hardware.
 - Logs: `journalctl -u qwen-strata` (server) and `<destdir>/.local/state/strata/launch/qwen-strata.engine.log` (engine; rotated weekly by logrotate with `copytruncate`).
 - A model started by `strata serve` under systemd is not listed by `strata launch --status`; use `systemctl status qwen-strata`.
 - TLS is out of scope.
