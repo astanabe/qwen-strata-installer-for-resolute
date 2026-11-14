@@ -10,7 +10,7 @@ Much of what the installer assumes about Strata comes from reading the Strata 0.
 
 ## Purpose
 
-A single-file bash installer that sets up Qwen3.8-Flash-Next with Strata 0.2.13 (https://github.com/Niko1221/Strata/releases/tag/v0.2.13) as a service on **Ubuntu 26.04 LTS (Resolute Raccoon)**, x86_64, Server or Desktop (WSL is detected and refused). Clients are web browsers and coding agents on an intranet. It is modelled on plamo-3-translate-installer-for-resolute and must coexist with it on one host (plamo uses TCP 18080/28080 and its own nginx site).
+A single-file bash installer that sets up Qwen3.8-Flash-Next with Strata 0.2.13 (https://github.com/Niko1221/Strata/releases/tag/v0.2.13) as a service on **Ubuntu 26.04 LTS (Resolute Raccoon)**, x86_64, Server or Desktop (WSL is detected and refused). Clients are web browsers and coding agents on an intranet. It is modelled on plamo-3-translate-installer-for-resolute and must coexist with it on one host (plamo uses TCP 18080/28080 and its own nginx site). It must also coexist with deepseek-maya-installer-for-resolute (`../deepseek-maya-installer-for-resolute/`, TCP 58080/58081), which was modelled on this installer, but the two services never run at the same time.
 
 There is no Python server, uWSGI or client in this repository: downloading and configuring is delegated to Strata's `install.sh` and `strata launch`. This repository adds systemd, nginx, ufw, GPU/NIC selection, the license confirmation and uninstall.
 
@@ -41,6 +41,7 @@ destdir (default `/opt/qwen-strata`) is the **home directory of the service user
 - **GPUs**: NVIDIA and AMD only (AMD untested; Intel Arc out of scope). Selected by PCI address; `--backend auto|nvidia|amd` is only a filter on the candidates, the backend given to Strata follows from the selected GPUs, and makers cannot be mixed. Default: one GPU — NVIDIA first, largest memory, most free memory, lowest PCI address. PCI addresses are converted to Strata's numbers at launch time (`gpu_indices`: `nvidia-smi` index, or KFD GPU node order).
 - **API key**: Strata's key is all-or-nothing, so Strata always has a key (generated once, kept on re-run, in `/etc/qwen-strata/strata.env`) and nginx adds it per path (`nginx_site`): `/metrics` unless `--web-api-key`; the agent API paths unless `--agent-api-key`; `/v1/chat/completions` by both, distinguishing the web page by `Sec-Fetch-Site: same-origin` or, because browsers do not send `Sec-Fetch-*` over plain HTTP to non-localhost hosts, by `Origin` equal to `Host` (forgeable; documented in the README). **Management paths never get the key added and there is no option to change that**; any path not listed falls into `location /` and is passed with the client's own headers, so unknown paths fail safe. Keep it that way when adding paths. The key is never written into the site file (`include /etc/qwen-strata/nginx-key.conf`, root 0600).
 - **nginx details that matter**: `proxy_set_header Host $http_host` (Strata compares the Origin of management POSTs with Host including the port; `$host` would break them); where the key is added, the client's `Authorization` is replaced and `x-api-key` removed (SDKs send placeholder keys); exact-match locations use a fixed URI in `proxy_pass` so that Strata sees exactly the path nginx matched; if `nginx -t` fails, the site link is removed before aborting so that other sites (plamo) are not affected.
+- **Coexistence**: with deepseek-maya on one host but never running together: `Conflicts=deepseek-maya.service` in the unit, `disable_deepseek_maya` stops and disables it before `strata launch` when it is running, starting, waiting for a restart or enabled (`deepseek_maya_in_use`; the summary announces it), and `--uninstall` only prints how to enable it again. The deepseek-maya installer does the same to `qwen-strata.service`, so the one installed last runs; keep the two sides symmetric. With plamo-3-translate: the unit is ordered `After=plamo-3-translate-llama.service plamo-3-translate-uwsgi.service`, because the engine pins the model in the RAM that is free at its start. Since plamo commit `0d8bc4e` its llama unit stays "activating" until the model is loaded (`ExecStartPost=` polling `/health`; requested from here), so the `After=` really waits for the load; a consequence is that any start of `qwen-strata` (also `systemctl restart` in `start_services`, which announces it) blocks while the plamo llama unit is activating, without a time limit. The plamo uWSGI unit no longer waits for the llama unit; it stays in our `After=` because it is cheap and takes its RAM first too. plamo's side must not name our unit. Other installers' units are only named in `[Unit]` and stopped/disabled; never edit or remove their files.
 - **License**: the Qwen Community License 1.0 must be accepted for every quantization (`yes` interactively, `--accept-license` otherwise).
 - **Re-run**: value precedence is option > environment (`QWENSTRATA_*`) > `/etc/qwen-strata/install.conf` > default; the Terminal is reused when the pinned version is installed; Strata verifies and reuses engine and model files. Deleting model files of other quantizations is offered only interactively (`--yes` never deletes downloads).
 - **Uninstall** removes the unit, the nginx site, the logrotate file, `/etc/qwen-strata`, the installer's ufw rules and destdir (only if the marker `.qwen-strata-installation` is present); apt packages, nginx and the service user stay.
@@ -58,15 +59,16 @@ destdir (default `/opt/qwen-strata`) is the **home directory of the service user
 
 1. Resolve values, stop early if no usable GPU (`require_gpu`), prompts, `validate`, GPU / interface / ufw prompts, license, summary
 2. `preflight`: ports (allowed to be held only by our own unit, or by nginx for a web port that was ours), destdir, home directory of an existing user, AVX2, disk, RAM, GPU driver (NVIDIA below 575.51 stops)
-3. apt (missing packages only) → 4. service user, destdir (marker, `chown -R`) → 5. stop the unit → 6. Strata's `install.sh` → 7. API key files → 8. `strata launch`, then `strata launch --stop`
+3. apt (missing packages only) → 4. service user, destdir (marker, `chown -R`) → 5. stop the unit, stop and disable `deepseek-maya.service` → 6. Strata's `install.sh` → 7. API key files → 8. `strata launch`, then `strata launch --stop`
 9. Unit, logrotate, nginx site (`nginx -t`), enable and start → 10. ufw, `install.conf` (saved before the tests on purpose) → 11. `/health` wait (up to 30 minutes), tests through nginx, offer to delete other quantizations
 
 ## Testing
 
 There is no test suite. The file is not executed when sourced (`main` runs only if `BASH_SOURCE[0] == $0`), so functions can be exercised from a test script as a normal user:
 
-- `bash -n install-qwen-strata.sh`; `shellcheck install-qwen-strata.sh` (not installed on the development machine and not run so far — run it when available and fix what it reports)
+- `bash -n install-qwen-strata.sh`; `shellcheck install-qwen-strata.sh` (0.11.0 reports nothing; keep it that way)
 - Settings and GPU logic: source the script, set `QWENSTRATAINS_INTERACTIVE`, put a fake `nvidia-smi` in `PATH` (answering the `--query-gpu=...` forms used), override `rocm_devices`, `net_interfaces` and `ufw_active`, then call `parse_args` → `resolve_values` → `require_gpu` → `prompt_values` → `validate` → `prompt_gpus` → `prompt_interfaces`.
+- Unit and coexistence: override `service_exists` and `systemctl` (`is-enabled`, `show`, `disable`), call `deepseek_maya_in_use` / `disable_deepseek_maya` / `show_summary`; render `write_unit` to a scratch file (`QWENSTRATAINS_UNIT_DIR` is readonly: rewrite the target in `declare -f write_unit`) and run `systemd-analyze verify` on it (only the missing `strata` binary may be reported).
 - nginx: fill `QWENSTRATAINS_VAL`, print `nginx_site` (replace the key include path), run a private nginx (`nginx -c <conf>` with `pid` and temp paths in a scratch directory) in front of a small Python server that enforces the key like Strata and echoes the headers it received; check the four `--web-api-key` / `--agent-api-key` combinations per path class. This was done for the current `nginx_site`; repeat it after any change to the site.
 - The checks to run on real hardware are listed in README.md ("Verification").
 
@@ -76,7 +78,7 @@ State at the end of the first implementation session (2026-11-14): the installer
 
 ### Before the hardware is available
 
-- Run `shellcheck install-qwen-strata.sh` and fix what it reports. It was not available on the development machine (no package, and downloading the release binary was not permitted in that session). `# shellcheck disable=` lines were written without being able to check them: SC2016 on `write_key_files` and `nginx_location`, and SC2086/SC2046 in the ufw functions (ported from the plamo installer).
+- `shellcheck` 0.11.0 was run on 2026-11-15 and reports nothing. Every `# shellcheck disable=` line was checked to be needed (SC2016 on `write_key_files` and `nginx_location`, SC2086/SC2046 in the ufw functions and `do_uninstall`). The only findings were SC2030/SC2031 false positives: shellcheck took the environment variable `USER` exported in the subshell of `run_as` for the key `USER` of `QWENSTRATAINS_VAL`; the `export` arguments there are quoted as whole words to avoid that.
 - The test scripts of the first session lived in a temporary directory and are gone. Recreate them as described under "Testing" when `nginx_site`, the settings code or the GPU selection change. What they covered: 140 HTTP checks (4 key settings x 35 requests: no key, placeholder key in `Authorization` and in `x-api-key`, the real key, page-like requests with `Origin` or `Sec-Fetch-Site`, foreign `Origin`, trailing slash, `..` in the path), all passing.
 
 ### First run on real hardware
@@ -92,7 +94,8 @@ Run in this order and record the results (the README "Verification" section list
 2. After it finishes: `systemctl status qwen-strata`, `journalctl -u qwen-strata`, the engine log under `<destdir>/.local/state/strata/launch/`, `curl http://127.0.0.1:38080/health`.
 3. From another host: the web chat in a browser (PC and phone), a coding agent through `/v1/chat/completions` (OpenAI-compatible) and `/v1/messages` (Anthropic-compatible) with a placeholder key.
 4. Re-run with the same settings (in-place update; the API key must stay the same), then with `--web-api-key` and `--agent-api-key` in the four combinations, then with another `--quant` (offer to delete the old files), then `--uninstall` and a fresh install.
-5. With the plamo-3-translate service installed on the same host: both web pages work, and each service uses its own GPU.
+5. With the plamo-3-translate service installed on the same host: both web pages work, each service uses its own GPU, and after a reboot `qwen-strata` starts only when `plamo-3-translate-llama.service` has become active, i.e. has loaded its model (`systemd-analyze critical-chain qwen-strata.service`, journal timestamps).
+6. With deepseek-maya installed on the same host: installing either one stops and disables the other; `systemctl start` of one stops the other (and how long that takes); only the enabled one starts at boot.
 
 ### Assumptions to confirm on the first run (taken from reading the Strata source)
 
@@ -123,4 +126,6 @@ If one of them is wrong, the installer most likely stops in `launch_model` or `s
 ### Open points to raise with the user when relevant
 
 - AMD GPUs remain untested, and the installer does not install `libdrm`/`libelf` packages that Strata's HIP engines may need on a minimal server.
+- Whether llama-server of plamo has really taken all its RAM and GPU memory when its `/health` returns 200 (the moment our unit may start) can only be checked on real hardware.
+- GPU default while the other service runs: `gpu_ranked` counts the memory used by a running `deepseek-maya` as in use, so a first non-interactive installation may pick the GPU that plamo uses. The deepseek-maya installer has the same behaviour towards `qwen-strata`.
 - The local git identity (`user.name`, `user.email`) is not configured on the development machine, so a plain `git commit` fails. Never choose or guess an author identity (for example from an earlier commit): the user decides it. Ask before changing git configuration.
