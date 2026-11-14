@@ -69,3 +69,58 @@ There is no test suite. The file is not executed when sourced (`main` runs only 
 - Settings and GPU logic: source the script, set `QWENSTRATAINS_INTERACTIVE`, put a fake `nvidia-smi` in `PATH` (answering the `--query-gpu=...` forms used), override `rocm_devices`, `net_interfaces` and `ufw_active`, then call `parse_args` → `resolve_values` → `require_gpu` → `prompt_values` → `validate` → `prompt_gpus` → `prompt_interfaces`.
 - nginx: fill `QWENSTRATAINS_VAL`, print `nginx_site` (replace the key include path), run a private nginx (`nginx -c <conf>` with `pid` and temp paths in a scratch directory) in front of a small Python server that enforces the key like Strata and echoes the headers it received; check the four `--web-api-key` / `--agent-api-key` combinations per path class. This was done for the current `nginx_site`; repeat it after any change to the site.
 - The checks to run on real hardware are listed in README.md ("Verification").
+
+## Handover for the next sessions
+
+State at the end of the first implementation session (2026-11-14): the installer, README.md and this file are committed and pushed (`main`; `git push` goes to both GitHub and GitLab). Nothing below has been done yet.
+
+### Before the hardware is available
+
+- Run `shellcheck install-qwen-strata.sh` and fix what it reports. It was not available on the development machine (no package, and downloading the release binary was not permitted in that session). `# shellcheck disable=` lines were written without being able to check them: SC2016 on `write_key_files` and `nginx_location`, and SC2086/SC2046 in the ufw functions (ported from the plamo installer).
+- The test scripts of the first session lived in a temporary directory and are gone. Recreate them as described under "Testing" when `nginx_site`, the settings code or the GPU selection change. What they covered: 140 HTTP checks (4 key settings x 35 requests: no key, placeholder key in `Authorization` and in `x-api-key`, the real key, page-like requests with `Origin` or `Sec-Fetch-Site`, foreign `Origin`, trailing slash, `..` in the path), all passing.
+
+### First run on real hardware
+
+The user plans to set up Claude Code on the target machine so that the installation can be run and checked there. Planned machines:
+
+- Ryzen Threadripper PRO 3995WX, 512 GB DDR4, 2 x GeForce RTX 3060 12 GB (one GPU for Strata; the plamo-3-translate service may use the other). Default `UD-Q4_K_XL`.
+- Possibly also Ryzen 9 9950X, 192 GB DDR5-5600, 1 x RTX 3060 12 GB, where the user would like `Q8_0` even if it is slower. From the Strata source: all experts fit in RAM there (needs about 136 GiB); the 50.7 GiB n-gram table stays on the SSD (keeping it in RAM would need about 206 GB); the GPU-side dense part is about 4.8 GB for every Unsloth file, so a larger quantization costs speed, not start-up. No measurement of `Q8_0` on an RTX 3060 exists in Strata's documents.
+
+Run in this order and record the results (the README "Verification" section lists the same checks for users; update it and the "Status" note at the top of the README with what was actually confirmed):
+
+1. `sudo bash install-qwen-strata.sh` interactively with the defaults. It downloads more than 110 GB and loads the model twice; expect hours. If it stops, the message of `die` names the step; re-running resumes the downloads.
+2. After it finishes: `systemctl status qwen-strata`, `journalctl -u qwen-strata`, the engine log under `<destdir>/.local/state/strata/launch/`, `curl http://127.0.0.1:38080/health`.
+3. From another host: the web chat in a browser (PC and phone), a coding agent through `/v1/chat/completions` (OpenAI-compatible) and `/v1/messages` (Anthropic-compatible) with a placeholder key.
+4. Re-run with the same settings (in-place update; the API key must stay the same), then with `--web-api-key` and `--agent-api-key` in the four combinations, then with another `--quant` (offer to delete the old files), then `--uninstall` and a fresh install.
+5. With the plamo-3-translate service installed on the same host: both web pages work, and each service uses its own GPU.
+
+### Assumptions to confirm on the first run (taken from reading the Strata source)
+
+If one of them is wrong, the installer most likely stops in `launch_model` or `smoke_test`; fix the installer and the README, not the symptom.
+
+- `strata launch ... --no-tui` without a terminal: prints progress, asks nothing (stdin is `/dev/null`), returns 0 after a successful test start, and writes `<destdir>/.config/strata/profiles/launch-qwen-strata.json` and `<destdir>/.local/state/strata/launch/qwen-strata.json` (checked by `launch_model`).
+- `--access local` together with `--api-key-env STRATA_API_KEY` keeps the key, and `STRATA_API_KEY` from the unit's `EnvironmentFile` is what `strata serve` enforces.
+- `strata launch --stop --preset qwen-strata` frees the port within 200 seconds.
+- `strata serve --profile launch-qwen-strata --host 127.0.0.1 --port 48080` runs under the unit as written: `runuser`/systemd with a `nologin` shell, `ProtectSystem=full`, `KillMode=mixed`, stop within `TimeoutStopSec=150`. Check `systemctl stop` and `restart` timings, and whether `LimitMEMLOCK`/`LimitRTTIME` warnings disappear from the logs. Sandboxing can be tightened only after this works.
+- `strata --version` exists and succeeds (used to decide whether the Terminal is reused); the Terminal version in the release's `install-manifest.txt` is `0.1.59.1` (`QWENSTRATAINS_STRATA_TERMINAL_VERSION`).
+- `/health` answers only when the model is loaded and contains `"loaded": true`, `"model": "..."` and `"max_context": N` (parsed with `sed` in `wait_health`).
+- Through nginx: `GET /config` is 401 without the key and 200 with it; `GET /metrics` and `GET /v1/models` are 200 with the key; the chat test body (`model`, `messages`, `max_tokens: 32`) is accepted. A thinking model may return an empty `content` with 32 tokens, which is why only the HTTP status is checked.
+- The web page really uses only `health`, `metrics`, `v1/chat/completions` (plus management paths) — watch the browser's network tab. With `--web-api-key` off, no "API key needed" pill or toast may appear during normal chatting; management requests (`config`, `settings`, `mcp`) are expected to fail quietly until the key is entered under About > Settings.
+- With `--web-api-key` and `--agent-api-key` set differently, real browsers over plain HTTP send `Origin` on the chat POST so that the `map` in `nginx_site` recognises the page (Chrome, Firefox, Safari on a phone).
+- Management POSTs from the page work once the key is entered (this depends on `proxy_set_header Host $http_host`).
+- GPU numbering: the PCI address selected in the installer is the GPU that Strata loads (compare `nvidia-smi` memory use per GPU with the selection). AMD numbering (KFD node order) cannot be checked on the planned machines.
+- Model folders are `<destdir>/.local/share/strata/Strata-data/models/<tag>` with the tags in `QWENSTRATAINS_QUANT` (used by `cleanup_old_models`), and shards shared between quantizations are hard links.
+- The logrotate rule works with Strata's 0700 state directories (`su <user> <user>`): test with `logrotate -d /etc/logrotate.d/qwen-strata`.
+- ufw rule handling and interface selection are ported unchanged from the plamo installer but untested here.
+
+### Things to measure and report to the user
+
+- Speed (tokens per second for output and for reading a prompt) with context 262144 and `UD-Q4_K_XL` on one RTX 3060, and how much a shorter `--ctx-size` gains.
+- Which drafter `auto` selects (expected: DFlash2) and whether `mtp` is faster on the RTX 3060 (`sm_86` is marked "slower" for DFlash2 in Strata's code). The installer has no option for the drafter; if `mtp` is clearly faster, propose adding one.
+- Whether `--tune quick` helps on the 64-core Threadripper (Strata's standard values were measured on a 6-core CPU).
+- On the 9950X machine, `Q8_0` against `UD-Q6_K_XL`.
+
+### Open points to raise with the user when relevant
+
+- AMD GPUs remain untested, and the installer does not install `libdrm`/`libelf` packages that Strata's HIP engines may need on a minimal server.
+- The local git identity (`user.name`, `user.email`) is not configured on the development machine, so a plain `git commit` fails. Never choose or guess an author identity (for example from an earlier commit): the user decides it. Ask before changing git configuration.
