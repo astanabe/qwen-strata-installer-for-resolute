@@ -177,23 +177,23 @@ web browser / coding agent
 ```
 
 - Strata's server provides the web chat page (`/`), the OpenAI-compatible API (`/v1/chat/completions`, `/v1/responses`, `/v1/models`) and the Anthropic-compatible API (`/v1/messages`, `/v1/messages/count_tokens`) on one port. There is no `/v1/completions` and no embeddings endpoint.
-- nginx (`nginx-full` from apt) is the only part reachable from other hosts. The site `qwen-strata` does not use `default_server`, so it can live beside other sites (e.g. plamo-3-translate-installer-for-resolute on TCP 18080 and 28080, deepseek-maya-installer-for-resolute on TCP 58080). Responses are not buffered (streaming), the timeouts are 3660 seconds and request bodies may be up to 256 MiB (pictures are sent inline).
+- nginx (`nginx-full` from apt) is the only part reachable from other hosts. The site `qwen-strata` does not use `default_server`, so it can live beside other sites (e.g. plamo-3-translate-installer-for-resolute on TCP 18080 and 28080, glm-maya-installer-for-resolute on TCP 48080, deepseek-maya-installer-for-resolute on TCP 58080). Responses are not buffered (streaming), the timeouts are 3660 seconds and request bodies may be up to 256 MiB (pictures are sent inline).
 - The service runs as the user given at installation (default `qwenstrata`). If the user does not exist, it is created as a system user without login and with destdir as its home directory. An existing user is used only if its home directory is destdir.
-- systemd unit: `Type=simple`, `strata serve --profile launch-qwen-strata --host 127.0.0.1 --port 38081`, `LimitMEMLOCK=infinity` (the engine pins the model in RAM), `LimitRTTIME=infinity`, `TimeoutStartSec=infinity`, `TimeoutStopSec=150`, `Restart=on-failure`, supplementary groups `video` and `render`, `After=plamo-3-translate-llama.service plamo-3-translate-uwsgi.service` and `Conflicts=deepseek-maya.service` (see [Coexistence with other services](#coexistence-with-other-services)). Sandboxing is light (`NoNewPrivileges`, `ProtectSystem=full`) until the service has been tested on real hardware.
+- systemd unit: `Type=simple`, `strata serve --profile launch-qwen-strata --host 127.0.0.1 --port 38081`, `LimitMEMLOCK=infinity` (the engine pins the model in RAM), `LimitRTTIME=infinity`, `TimeoutStartSec=infinity`, `TimeoutStopSec=150`, `Restart=on-failure`, supplementary groups `video` and `render`, `After=plamo-3-translate-llama.service plamo-3-translate-uwsgi.service` and `Conflicts=deepseek-maya.service glm-maya.service` (see [Coexistence with other services](#coexistence-with-other-services)). Sandboxing is light (`NoNewPrivileges`, `ProtectSystem=full`) until the service has been tested on real hardware.
 - Logs: `journalctl -u qwen-strata` (server) and `<destdir>/.local/state/strata/launch/qwen-strata.engine.log` (engine; rotated weekly by logrotate with `copytruncate`).
 - A model started by `strata serve` under systemd is not listed by `strata launch --status`; use `systemctl status qwen-strata`.
 - TLS is out of scope.
 
 ### Coexistence with other services
 
-The installer is meant to share one host with the services of two other installers. Their ports, nginx sites, service users and directories do not overlap. Nothing below has an effect when the other service is not installed.
+The installer is meant to share one host with the services of three other installers. Their ports, nginx sites, service users and directories do not overlap. Nothing below has an effect when the other service is not installed.
 
-- **[deepseek-maya-installer-for-resolute](https://github.com/astanabe/deepseek-maya-installer-for-resolute)** (`deepseek-maya.service`, TCP 58080 and 58081): both can be installed on one host, but they never run at the same time, because each needs a GPU and most of the RAM.
-  - The unit declares `Conflicts=deepseek-maya.service` (and `deepseek-maya.service` declares `Conflicts=qwen-strata.service`), so starting one stops the other.
-  - If `deepseek-maya.service` is running or enabled, the installer stops and disables it before `strata launch` (the summary shown before the installation says so). The service installed or re-installed last is therefore the one that runs and that starts at boot.
-  - Switch by hand with `sudo systemctl disable --now deepseek-maya && sudo systemctl enable --now qwen-strata`, or the other way round. Keep only one of the two enabled: with both enabled, systemd starts only one of them at boot, and which one is not defined.
-  - `--uninstall` does not enable `deepseek-maya.service` again; it prints the command to do so.
-  - While `deepseek-maya` is running, its GPU counts as in use for the default GPU selection, so on a first installation give `--gpus` (or answer the question) if both are meant to use the same GPU.
+- **[deepseek-maya-installer-for-resolute](https://github.com/astanabe/deepseek-maya-installer-for-resolute)** (`deepseek-maya.service`, TCP 58080 and 58081) and **[glm-maya-installer-for-resolute](https://github.com/astanabe/glm-maya-installer-for-resolute)** (`glm-maya.service`, TCP 48080 and 48081): all three can be installed on one host, but only one of them runs at a time, because each needs a GPU and most of the RAM.
+  - The unit declares `Conflicts=deepseek-maya.service glm-maya.service` and the units of the other two installers name `qwen-strata.service` in the same way, so starting one stops the one that is running.
+  - If `deepseek-maya.service` or `glm-maya.service` is running or enabled, the installer stops and disables it before `strata launch` (the summary shown before the installation says so). `strata launch` is not a unit start, so `Conflicts=` alone would leave the other service holding its GPU and RAM at that point. The service installed or re-installed last is therefore the one that runs and that starts at boot.
+  - Switch by hand with `sudo systemctl disable --now deepseek-maya glm-maya && sudo systemctl enable --now qwen-strata`, or likewise for one of the others. Keep only one of the three enabled: with more than one enabled, systemd starts only one of them at boot, and which one is not defined.
+  - `--uninstall` does not enable `deepseek-maya.service` or `glm-maya.service` again; it prints the commands to do so.
+  - While `deepseek-maya` or `glm-maya` is running, its GPU counts as in use for the default GPU selection, so on a first installation give `--gpus` (or answer the question) if they are meant to use the same GPU.
 - **[plamo-3-translate-installer-for-resolute](https://github.com/astanabe/plamo-3-translate-installer-for-resolute)** (`plamo-3-translate-llama.service`, `plamo-3-translate-uwsgi.service`, TCP 18080 and 28080): can run at the same time, on another GPU. Because Strata's engine pins the model in the RAM that is free when it starts, the unit is ordered after the two plamo services.
   - `plamo-3-translate-llama.service` counts as started only when its model is loaded (it waits for the `/health` of its llama-server), so at boot Strata starts after llama-server has taken its memory. This needs a plamo-3-translate installation made with its installer of 2026-11-15 or later (commit `0d8bc4e`); with an older one, re-run that installer, otherwise the order only says that llama-server has been started.
   - The same wait applies to `systemctl start qwen-strata` or `restart`, and to the start at the end of this installer, while `plamo-3-translate-llama.service` is still loading its model: the command returns when Strata has been started after that. There is no time limit on the plamo side.
@@ -232,7 +232,7 @@ The model name is reported by `/v1/models`. Strata can print the settings for se
 2. Check prerequisites: the ports are not in use, destdir is empty or a previous installation, the service user's home directory, free disk space and memory (warn and ask to continue if insufficient), GPU driver
 3. Install missing dependencies via apt: `nginx-full curl ca-certificates tar pciutils libgomp1 libatomic1 libnuma1 zlib1g`
 4. Create the service user if needed and prepare destdir
-5. Stop the existing service (`strata launch` fails unless the port and the GPU are free); stop and disable `deepseek-maya.service` if it is running or enabled
+5. Stop the existing service (`strata launch` fails unless the port and the GPU are free); stop and disable `deepseek-maya.service` and `glm-maya.service` if they are running or enabled
 6. Download Strata's `install.sh` from the pinned release, verify it and run it as the service user (skipped when the pinned Terminal is already installed)
 7. Generate the API key, or reuse the existing one
 8. Run `strata launch` once as the service user to download the engine and the model, write the configuration, tune (if selected) and test-start the model; then stop it with `strata launch --stop`
@@ -247,12 +247,12 @@ The model name is reported by `/v1/models`. Strata can print the settings for se
 - Requiring the API key for only one of the web page and the agents depends on request headers and can be circumvented on purpose.
 - With the default settings anyone on the networks the web server listens on can use the model without a key; only the management paths are protected.
 - The first installation loads the model twice.
-- Does not run at the same time as the service of deepseek-maya-installer-for-resolute; installing one stops and disables the other.
+- Does not run at the same time as the services of deepseek-maya-installer-for-resolute and glm-maya-installer-for-resolute; installing one of the three stops and disables the other two.
 - TLS is out of scope.
 
 ## Verification
 
-Done so far, without the target hardware: `bash -n`; the option parsing, value precedence, validation and prompts with stubbed GPU and network detection; the generated systemd unit (with `systemd-analyze verify`), logrotate configuration and `install.conf`; the handling of `deepseek-maya.service` with a stand-in for `systemctl`; that the start of a unit waits for a unit it is ordered after while that one is still starting (with stand-in units); and the generated nginx configuration with `nginx -t` and a dummy upstream (which requests get the key for the four combinations of `--web-api-key` and `--agent-api-key`). `shellcheck` (0.11.0) reports nothing.
+Done so far, without the target hardware: `bash -n`; the option parsing, value precedence, validation and prompts with stubbed GPU and network detection; the generated systemd unit (with `systemd-analyze verify`), logrotate configuration and `install.conf`; the handling of `deepseek-maya.service` and `glm-maya.service` with a stand-in for `systemctl`; that the start of a unit waits for a unit it is ordered after while that one is still starting (with stand-in units); and the generated nginx configuration with `nginx -t` and a dummy upstream (which requests get the key for the four combinations of `--web-api-key` and `--agent-api-key`). `shellcheck` (0.11.0) reports nothing.
 
 To be done on real hardware (planned machine: Ryzen Threadripper PRO 3995WX, 512 GB RAM, 2 x GeForce RTX 3060 12 GB, one of them for Strata):
 
@@ -266,4 +266,4 @@ To be done on real hardware (planned machine: Ryzen Threadripper PRO 3995WX, 512
   ```
 - Start-up and speed with context 262144 and `UD-Q4_K_XL`, the drafter Strata actually selects, and that the selected PCI address is the GPU Strata uses
 - Both services working side by side with plamo-3-translate-installer-for-resolute, each on its own GPU, and after a reboot Strata started only when the llama-server of plamo-3-translate has loaded its model
-- With deepseek-maya-installer-for-resolute installed: installing either one stops and disables the other, `systemctl start` of one stops the other, and only the enabled one starts at boot
+- With deepseek-maya-installer-for-resolute and glm-maya-installer-for-resolute installed: installing any one of the three stops and disables the other two, `systemctl start` of one stops the one that is running, and only the enabled one starts at boot
